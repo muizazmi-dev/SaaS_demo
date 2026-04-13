@@ -8,7 +8,6 @@ const { authenticate } = require('../middleware/auth');
 const logger = require('../config/logger');
 
 // POST /api/auth/signup
-// Creates a new tenant + first admin user in a single transaction
 router.post(
   '/signup',
   [
@@ -25,7 +24,6 @@ router.post(
 
     const { companyName, email, password, fullName } = req.body;
 
-    // Generate a URL-safe slug from company name
     const slug = companyName
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
@@ -34,7 +32,6 @@ router.post(
 
     try {
       const result = await withTransaction(async (txQuery) => {
-        // Check slug uniqueness
         const existing = await txQuery(
           'SELECT id FROM tenants WHERE slug = @slug',
           { slug }
@@ -43,7 +40,6 @@ router.post(
           throw Object.assign(new Error('Company name already taken'), { code: 'SLUG_TAKEN' });
         }
 
-        // Check email uniqueness across all tenants (optional — remove if you want same email on multiple tenants)
         const emailExists = await txQuery(
           'SELECT id FROM users WHERE email = @email',
           { email }
@@ -56,14 +52,12 @@ router.post(
         const userId = uuidv4();
         const passwordHash = await bcrypt.hash(password, 12);
 
-        // Create tenant
         await txQuery(
-          `INSERT INTO tenants (id, name, slug, plan, status)
+          `INSERT INTO tenants (id, name, slug, [plan], [status])
            VALUES (@id, @name, @slug, 'free', 'active')`,
           { id: tenantId, name: companyName, slug }
         );
 
-        // Create admin user
         await txQuery(
           `INSERT INTO users (id, tenant_id, email, password_hash, full_name, role)
            VALUES (@id, @tenantId, @email, @passwordHash, @fullName, 'admin')`,
@@ -110,10 +104,10 @@ router.post(
     try {
       const rows = await query(
         `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.full_name, u.role,
-                t.name AS tenant_name, t.slug, t.plan
+                t.name AS tenant_name, t.slug, t.[plan], t.[status]
          FROM users u
          JOIN tenants t ON t.id = u.tenant_id
-         WHERE u.email = @email AND t.status = 'active'`,
+         WHERE u.email = @email AND t.[status] = 'active'`,
         { email }
       );
 
@@ -145,12 +139,12 @@ router.post(
   }
 );
 
-// GET /api/auth/me — returns current user + tenant
+// GET /api/auth/me
 router.get('/me', authenticate, async (req, res) => {
   try {
     const rows = await query(
       `SELECT u.id, u.email, u.full_name, u.role, u.created_at,
-              t.id AS tenant_id, t.name AS tenant_name, t.slug, t.plan
+              t.id AS tenant_id, t.name AS tenant_name, t.slug, t.[plan]
        FROM users u
        JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = @userId AND u.tenant_id = @tenantId`,

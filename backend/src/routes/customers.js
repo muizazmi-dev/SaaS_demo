@@ -6,14 +6,13 @@ const { authenticate } = require('../middleware/auth');
 const { auditLog } = require('../middleware/auditLog');
 const logger = require('../config/logger');
 
-// All customer routes require authentication
 router.use(authenticate);
 
-// GET /api/customers — list all customers for the authenticated tenant
+// GET /api/customers
 router.get('/', async (req, res) => {
   try {
     const rows = await query(
-      `SELECT id, name, email, phone, company, status, created_at
+      `SELECT id, name, email, phone, company, [status], created_at
        FROM customers
        WHERE tenant_id = @tenantId
        ORDER BY created_at DESC`,
@@ -26,7 +25,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/customers/:id — get single customer (must belong to same tenant)
+// GET /api/customers/:id
 router.get(
   '/:id',
   [param('id').isUUID()],
@@ -36,7 +35,7 @@ router.get(
 
     try {
       const rows = await query(
-        `SELECT id, name, email, phone, company, status, created_at, updated_at
+        `SELECT id, name, email, phone, company, [status], created_at, updated_at
          FROM customers
          WHERE id = @id AND tenant_id = @tenantId`,
         { id: req.params.id, tenantId: req.tenantId }
@@ -50,7 +49,7 @@ router.get(
   }
 );
 
-// POST /api/customers — create customer scoped to authenticated tenant
+// POST /api/customers
 router.post(
   '/',
   auditLog('customer'),
@@ -69,7 +68,7 @@ router.post(
 
     try {
       await query(
-        `INSERT INTO customers (id, tenant_id, name, email, phone, company, status)
+        `INSERT INTO customers (id, tenant_id, name, email, phone, company, [status])
          VALUES (@id, @tenantId, @name, @email, @phone, @company, 'active')`,
         { id, tenantId: req.tenantId, name, email, phone: phone || null, company: company || null }
       );
@@ -88,7 +87,7 @@ router.post(
   }
 );
 
-// PUT /api/customers/:id — update customer (tenant-scoped)
+// PUT /api/customers/:id
 router.put(
   '/:id',
   auditLog('customer'),
@@ -106,13 +105,13 @@ router.put(
 
     const { name, email, phone, company, status } = req.body;
     try {
-      const result = await query(
+      await query(
         `UPDATE customers
-         SET name = COALESCE(@name, name),
-             email = COALESCE(@email, email),
-             phone = COALESCE(@phone, phone),
+         SET name    = COALESCE(@name, name),
+             email   = COALESCE(@email, email),
+             phone   = COALESCE(@phone, phone),
              company = COALESCE(@company, company),
-             status = COALESCE(@status, status),
+             [status] = COALESCE(@status, [status]),
              updated_at = GETUTCDATE()
          WHERE id = @id AND tenant_id = @tenantId`,
         { id: req.params.id, tenantId: req.tenantId, name, email, phone, company, status }

@@ -10,8 +10,8 @@ const migrations = [
         id            NVARCHAR(36)  NOT NULL PRIMARY KEY,
         name          NVARCHAR(255) NOT NULL,
         slug          NVARCHAR(100) NOT NULL UNIQUE,
-        plan          NVARCHAR(50)  NOT NULL DEFAULT 'free',
-        status        NVARCHAR(50)  NOT NULL DEFAULT 'active',
+        [plan]        NVARCHAR(50)  NOT NULL DEFAULT 'free',
+        [status]      NVARCHAR(50)  NOT NULL DEFAULT 'active',
         created_at    DATETIME2     NOT NULL DEFAULT GETUTCDATE(),
         updated_at    DATETIME2     NOT NULL DEFAULT GETUTCDATE()
       );
@@ -47,7 +47,7 @@ const migrations = [
         email         NVARCHAR(255) NOT NULL,
         phone         NVARCHAR(50),
         company       NVARCHAR(255),
-        status        NVARCHAR(50)  NOT NULL DEFAULT 'active',
+        [status]      NVARCHAR(50)  NOT NULL DEFAULT 'active',
         created_at    DATETIME2     NOT NULL DEFAULT GETUTCDATE(),
         updated_at    DATETIME2     NOT NULL DEFAULT GETUTCDATE()
       );
@@ -80,7 +80,6 @@ async function migrate() {
   console.log('[migrate] Starting database migrations...');
   const pool = await getPool();
 
-  // Create migrations tracking table
   await pool.request().query(`
     IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='schema_migrations' AND xtype='U')
     CREATE TABLE schema_migrations (

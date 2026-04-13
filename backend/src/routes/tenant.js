@@ -5,11 +5,11 @@ const logger = require('../config/logger');
 
 router.use(authenticate);
 
-// GET /api/tenant — return current tenant info + stats
+// GET /api/tenant
 router.get('/', async (req, res) => {
   try {
     const [tenant] = await query(
-      'SELECT id, name, slug, plan, status, created_at FROM tenants WHERE id = @tenantId',
+      'SELECT id, name, slug, [plan], [status], created_at FROM tenants WHERE id = @tenantId',
       { tenantId: req.tenantId }
     );
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
@@ -28,7 +28,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/tenant/audit — returns last 50 audit log entries (admin only)
+// GET /api/tenant/audit (admin only)
 router.get('/audit', requireRole('admin'), async (req, res) => {
   try {
     const rows = await query(
