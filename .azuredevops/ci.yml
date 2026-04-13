@@ -1,0 +1,179 @@
+# CI Pipeline — runs on every PR and push to main
+# Lints, tests, and builds both frontend and backend
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+      - fix/*
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  NODE_VERSION: '20.x'
+  BACKEND_DIR: 'backend'
+  FRONTEND_DIR: 'frontend'
+
+stages:
+
+# ─────────────────────────────────────────────
+# Stage 1: Backend — lint, test, build
+# ─────────────────────────────────────────────
+- stage: BackendCI
+  displayName: 'Backend CI'
+  jobs:
+  - job: Build
+    displayName: 'Build & test backend'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Use Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: $(NODE_VERSION)
+
+    - task: Cache@2
+      displayName: 'Cache npm dependencies'
+      inputs:
+        key: 'npm | "$(Agent.OS)" | $(BACKEND_DIR)/package-lock.json'
+        restoreKeys: 'npm | "$(Agent.OS)"'
+        path: $(BACKEND_DIR)/node_modules
+
+    - script: npm ci
+      displayName: 'Install dependencies'
+      workingDirectory: $(BACKEND_DIR)
+
+    - script: npm test -- --ci --coverage --passWithNoTests
+      displayName: 'Run tests'
+      workingDirectory: $(BACKEND_DIR)
+      env:
+        NODE_ENV: test
+        DB_SERVER: localhost
+        DB_NAME: test
+        DB_USER: sa
+        DB_PASSWORD: Test@1234
+        JWT_SECRET: test-secret-for-ci
+
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: '$(BACKEND_DIR)/coverage/junit.xml'
+        failTaskOnFailedTests: true
+
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      condition: succeededOrFailed()
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '$(BACKEND_DIR)/coverage/cobertura-coverage.xml'
+
+    # Create backend artifact (zip for App Service deployment)
+    - script: |
+        cd $(BACKEND_DIR)
+        zip -r $(Build.ArtifactStagingDirectory)/backend.zip . \
+          --exclude "*.git*" \
+          --exclude "node_modules/*" \
+          --exclude "coverage/*" \
+          --exclude "*.test.js"
+      displayName: 'Package backend'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish backend artifact'
+      inputs:
+        pathToPublish: $(Build.ArtifactStagingDirectory)/backend.zip
+        artifactName: backend
+
+# ─────────────────────────────────────────────
+# Stage 2: Frontend — lint, build
+# ─────────────────────────────────────────────
+- stage: FrontendCI
+  displayName: 'Frontend CI'
+  dependsOn: []   # Run in parallel with BackendCI
+  jobs:
+  - job: Build
+    displayName: 'Build frontend'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Use Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: $(NODE_VERSION)
+
+    - task: Cache@2
+      displayName: 'Cache npm dependencies'
+      inputs:
+        key: 'npm | "$(Agent.OS)" | $(FRONTEND_DIR)/package-lock.json'
+        restoreKeys: 'npm | "$(Agent.OS)"'
+        path: $(FRONTEND_DIR)/node_modules
+
+    - script: npm ci
+      displayName: 'Install dependencies'
+      workingDirectory: $(FRONTEND_DIR)
+
+    - script: npm run build
+      displayName: 'Build frontend'
+      workingDirectory: $(FRONTEND_DIR)
+      env:
+        VITE_API_URL: $(VITE_API_URL)   # Set in pipeline variable group
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish frontend artifact'
+      inputs:
+        pathToPublish: $(FRONTEND_DIR)/dist
+        artifactName: frontend
+
+# ─────────────────────────────────────────────
+# Stage 3: Terraform validation
+# ─────────────────────────────────────────────
+- stage: TerraformValidate
+  displayName: 'Terraform validate'
+  dependsOn: []
+  jobs:
+  - job: Validate
+    displayName: 'Validate Terraform config'
+    steps:
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: 'latest'
+
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: 'infrastructure/terraform'
+        backendServiceArm: 'azure-service-connection'
+        backendAzureRmResourceGroupName: 'rg-tfstate'
+        backendAzureRmStorageAccountName: '$(TF_STATE_STORAGE_ACCOUNT)'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'saas-demo.tfstate'
+
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: 'infrastructure/terraform'
+
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform plan (dry run)'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: 'infrastructure/terraform'
+        environmentServiceNameAzureRM: 'azure-service-connection'
+        commandOptions: >
+          -var="subscription_id=$(ARM_SUBSCRIPTION_ID)"
+          -var="sql_admin_password=$(SQL_ADMIN_PASSWORD)"
+          -var="jwt_secret=$(JWT_SECRET)"
+          -out=tfplan

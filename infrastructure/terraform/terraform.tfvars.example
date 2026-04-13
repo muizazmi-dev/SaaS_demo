@@ -1,0 +1,8 @@
+subscription_id    = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+location           = "southeastasia"
+app_name           = "saasdemo"
+environment        = "dev"
+sql_admin_user     = "sqladmin"
+sql_admin_password = "YourStr0ngP@ssword!"
+jwt_secret         = "change-me-to-at-least-32-random-characters-here"
+frontend_url       = "https://your-static-web-app.azurestaticapps.net"

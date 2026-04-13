@@ -1,0 +1,253 @@
+# CD Pipeline — deploys to dev on merge to main, prod via manual approval
+# Requires pipeline variables (set in Azure DevOps library):
+#   ARM_SUBSCRIPTION_ID, SQL_ADMIN_PASSWORD, JWT_SECRET,
+#   TF_STATE_STORAGE_ACCOUNT, VITE_API_URL
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none   # CD does not run on PRs
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  NODE_VERSION: '20.x'
+
+resources:
+  pipelines:
+  - pipeline: ci
+    source: 'SaaS Demo CI'
+    trigger:
+      branches:
+        include:
+          - main
+
+stages:
+
+# ─────────────────────────────────────────────
+# Stage 1: Infrastructure — Terraform apply (dev)
+# ─────────────────────────────────────────────
+- stage: InfraDev
+  displayName: 'Infra — dev'
+  variables:
+    TF_ENVIRONMENT: dev
+  jobs:
+  - deployment: TerraformApply
+    displayName: 'Terraform apply (dev)'
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: 'infrastructure/terraform'
+              backendServiceArm: 'azure-service-connection'
+              backendAzureRmResourceGroupName: 'rg-tfstate'
+              backendAzureRmStorageAccountName: '$(TF_STATE_STORAGE_ACCOUNT)'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'saas-demo-dev.tfstate'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: 'infrastructure/terraform'
+              environmentServiceNameAzureRM: 'azure-service-connection'
+              commandOptions: >
+                -auto-approve
+                -var="subscription_id=$(ARM_SUBSCRIPTION_ID)"
+                -var="environment=dev"
+                -var="sql_admin_password=$(SQL_ADMIN_PASSWORD)"
+                -var="jwt_secret=$(JWT_SECRET)"
+                -var="frontend_url=$(VITE_API_URL)"
+
+          # Capture App Service name from Terraform output
+          - script: |
+              APP_NAME=$(terraform output -raw app_service_url 2>/dev/null | sed 's|https://||')
+              echo "##vso[task.setvariable variable=APP_SERVICE_URL;isOutput=true]$APP_NAME"
+            displayName: 'Capture Terraform outputs'
+            workingDirectory: 'infrastructure/terraform'
+            name: tf_outputs
+
+# ─────────────────────────────────────────────
+# Stage 2: Deploy backend (dev)
+# ─────────────────────────────────────────────
+- stage: DeployBackendDev
+  displayName: 'Deploy backend — dev'
+  dependsOn: InfraDev
+  jobs:
+  - deployment: DeployBackend
+    displayName: 'Deploy to App Service (dev)'
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: ci
+            artifact: backend
+            displayName: 'Download backend artifact'
+
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(NODE_VERSION)
+
+          # Run DB migrations before the new code goes live
+          - script: |
+              cd backend
+              npm ci --production
+              npm run db:migrate
+            displayName: 'Run database migrations'
+            env:
+              NODE_ENV: production
+              DB_SERVER: $(DB_SERVER_DEV)
+              DB_NAME: saas-demo
+              DB_USER: sqladmin
+              DB_PASSWORD: $(SQL_ADMIN_PASSWORD)
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure App Service'
+            inputs:
+              azureSubscription: 'azure-service-connection'
+              appType: webAppLinux
+              appName: 'app-saasdemo-dev-$(SUFFIX)'
+              package: $(Pipeline.Workspace)/ci/backend/backend.zip
+              runtimeStack: 'NODE|20-lts'
+              startUpCommand: 'npm start'
+
+          # Smoke test — verify /health returns 200
+          - script: |
+              echo "Waiting for app to start..."
+              sleep 30
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://app-saasdemo-dev-$(SUFFIX).azurewebsites.net/health)
+              echo "Health check status: $STATUS"
+              if [ "$STATUS" != "200" ]; then
+                echo "Health check failed!"
+                exit 1
+              fi
+            displayName: 'Health check smoke test'
+
+# ─────────────────────────────────────────────
+# Stage 3: Deploy frontend (dev)
+# ─────────────────────────────────────────────
+- stage: DeployFrontendDev
+  displayName: 'Deploy frontend — dev'
+  dependsOn: DeployBackendDev
+  jobs:
+  - deployment: DeployFrontend
+    displayName: 'Deploy to Azure Static Web Apps (dev)'
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: ci
+            artifact: frontend
+            displayName: 'Download frontend artifact'
+
+          - task: AzureStaticWebApp@0
+            displayName: 'Deploy frontend to Static Web Apps'
+            inputs:
+              azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_TOKEN_DEV)
+              app_location: '$(Pipeline.Workspace)/ci/frontend'
+              skip_app_build: true
+              output_location: ''
+
+# ─────────────────────────────────────────────
+# Stage 4: Production gate (manual approval)
+# ─────────────────────────────────────────────
+- stage: ProdApproval
+  displayName: 'Prod — awaiting approval'
+  dependsOn: DeployFrontendDev
+  jobs:
+  - job: WaitForApproval
+    displayName: 'Manual approval gate'
+    pool: server    # agentless — waits for approval in Azure DevOps UI
+    timeoutInMinutes: 1440   # 24 hours
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Approve production deployment'
+      inputs:
+        notifyUsers: '$(PROD_APPROVERS)'
+        instructions: |
+          Dev deployment passed health checks.
+          Review the dev environment before approving production.
+          Dev URL: https://app-saasdemo-dev-$(SUFFIX).azurewebsites.net
+
+# ─────────────────────────────────────────────
+# Stage 5: Production deploy
+# ─────────────────────────────────────────────
+- stage: DeployProd
+  displayName: 'Deploy — prod'
+  dependsOn: ProdApproval
+  variables:
+    TF_ENVIRONMENT: prod
+  jobs:
+  - deployment: DeployProd
+    displayName: 'Deploy to production'
+    environment: 'prod'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform apply (prod)'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: 'infrastructure/terraform'
+              environmentServiceNameAzureRM: 'azure-service-connection'
+              commandOptions: >
+                -auto-approve
+                -var="subscription_id=$(ARM_SUBSCRIPTION_ID)"
+                -var="environment=prod"
+                -var="sql_admin_password=$(SQL_ADMIN_PASSWORD)"
+                -var="jwt_secret=$(JWT_SECRET_PROD)"
+                -var="frontend_url=$(VITE_API_URL_PROD)"
+
+          # Deploy to staging slot, then swap (zero-downtime)
+          - task: AzureWebApp@1
+            displayName: 'Deploy to staging slot'
+            inputs:
+              azureSubscription: 'azure-service-connection'
+              appType: webAppLinux
+              appName: 'app-saasdemo-prod-$(SUFFIX)'
+              slotName: staging
+              package: $(Pipeline.Workspace)/ci/backend/backend.zip
+              runtimeStack: 'NODE|20-lts'
+
+          - task: AzureAppServiceManage@0
+            displayName: 'Swap staging → production'
+            inputs:
+              azureSubscription: 'azure-service-connection'
+              Action: 'Swap Slots'
+              WebAppName: 'app-saasdemo-prod-$(SUFFIX)'
+              ResourceGroupName: 'rg-saasdemo-prod'
+              SourceSlot: staging
+
+          - task: AzureStaticWebApp@0
+            displayName: 'Deploy frontend (prod)'
+            inputs:
+              azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_TOKEN_PROD)
+              app_location: '$(Pipeline.Workspace)/ci/frontend'
+              skip_app_build: true
+              output_location: ''
