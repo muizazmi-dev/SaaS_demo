@@ -37,7 +37,7 @@ resource "azurerm_linux_web_app" "main" {
     health_check_path = "/health"
 
     application_stack {
-      node_version = "20-lts"
+      node_version = "18-lts"
     }
 
     cors {
@@ -100,7 +100,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
     always_on        = false
     health_check_path = "/health"
     application_stack {
-      node_version = "20-lts"
+      node_version = "18-lts"
     }
   }
 

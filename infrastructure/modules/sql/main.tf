@@ -54,9 +54,9 @@ resource "azurerm_mssql_database" "main" {
 }
 
 # Transparent Data Encryption (on by default for Azure SQL — explicit for clarity)
-resource "azurerm_mssql_database_transparent_data_encryption" "main" {
-  database_id = azurerm_mssql_database.main.id
-}
+#resource "azurerm_mssql_database_transparent_data_encryption" "main" {
+#  database_id = azurerm_mssql_database.main.id
+#}
 
 output "server_fqdn" {
   value = azurerm_mssql_server.main.fully_qualified_domain_name

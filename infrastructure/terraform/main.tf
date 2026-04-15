@@ -4,7 +4,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.110"
+      version = "~> 3.75.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -15,7 +15,7 @@ terraform {
   # Remote state — update storage account details after bootstrapping
   backend "azurerm" {
     resource_group_name  = "rg-tfstate"
-    storage_account_name = "stftstate<your-suffix>"
+    storage_account_name = "stftstatemuiz001"
     container_name       = "tfstate"
     key                  = "saas-demo.tfstate"
   }
